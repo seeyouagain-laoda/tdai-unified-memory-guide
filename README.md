@@ -4,6 +4,8 @@
 > 实测环境：飞牛 fnOS NAS（192.168.31.123）+ Windows 11 + WorkBuddy。TDAI 以 Docker 四容器部署在 NAS。
 > 作者踩过的所有坑都写进来了，照做即可。
 
+> **官方底座**：TencentDB Agent Memory（腾讯开源，MIT 协议）— https://github.com/TencentCloud/TencentDB-Agent-Memory ｜ 四资产 Chat Memory / Skill / Wiki / CodeGraph，L0→L3 分层蒸馏，面板 `http://<nas>:8125`。
+
 ---
 
 ## 0. 一句话原理
@@ -278,6 +280,22 @@ curl -s -o /dev/null -w '%{http_code}' --noproxy '*' http://127.0.0.1:8420/healt
 3. **改完任何 NAS systemd 服务必须 `MainPID` diff 验证**才算生效。
 4. 合并历史记忆前**先备份 volume**，FTS 必须重建。
 5. 别用 `start-all.sh` 普通用户直跑，用 root + 三子脚本。
+
+---
+
+## 10. English Summary
+
+This tutorial gives **WorkBuddy**, **OpenClaw on your NAS**, and **OpenClaw on your host PC** one shared long-term memory, using Tencent's open-source **TencentDB Agent Memory** (MIT license). Deploy the Hub (core + hub + knowledge + proxy) on your NAS via Docker; all three clients point at the proxy (`http://<nas>:8096`).
+
+- **The whole trick is one `agent_id`.** TDAI partitions memory by `agent_id`. Set all three ends to the **same** `agent_id` (e.g. `agt-shared`) with the **same** `team_id` and **omit** `x-task-id` → L0–L3 are shared across all three ends.
+- NAS / Windows OpenClaw: configure the `memory-proxy` provider header `x-agent-id: agt-shared` **and** the `memory-tencentdb` plugin `instanceId: agt-shared`.
+- WorkBuddy: it can't send custom headers, so run a thin local relay (`tdai-wb-relay.py`) on `127.0.0.1:8911` that adds the headers and forwards to `/openclaw/default/v1/chat/completions`. **Do not** use the `/workbuddy/default/v1/responses` path — it returns 200 but does **not** persist to the shared DB.
+- **#1 gotcha — session→agent cache trap:** the proxy caches the `agent_id` seen at a session's first `sessionInit` by **session id**. Reusing an old session id silently writes to the old partition even if you send a new `x-agent-id`. Always use a **fresh session id per day** (`wb-shared-<date>`), never reuse historical ids like `wb-desktop-<date>`.
+- **#2 gotcha — don't run `start-all.sh` as a normal user:** it's interactive and writes `.env` in a root-owned dir → `Permission denied` aborts and the stack never starts. Run the three non-interactive sub-scripts as root with `setsid` (see §4).
+- **#3 gotcha — rebuild FTS after merging:** FTS5 external-content tables don't auto-sync base-table `UPDATE`; run `INSERT INTO l0_fts(l0_fts) VALUES('rebuild')` (or DROP+recreate) or search returns nothing.
+- Verify by querying `vectors.db`: `agt-shared` should hold all rows and other partitions should be 0.
+
+Reference: https://github.com/TencentCloud/TencentDB-Agent-Memory
 
 ---
 
