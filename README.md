@@ -246,7 +246,15 @@ WorkBuddy 里把记忆类模型的 API base 指向 `http://127.0.0.1:8911/v1/cha
 
 > ⚠ **session→agent 缓存陷阱**：proxy 按 `session id` 缓存首次 `sessionInit` 见到的身份。复用旧 session（如历史 `wb-desktop-<日期>`）会写进旧分区。所以 session 必须每天换新 id（`wb-shared-<日期>`），绝不复用历史 id。
 
-> ⚠ **WB relay 当前已知缺陷**：本机 relay `:8911` 在实测中偶发返回 502（`upstream connect failed os error 10061`）。Windows 直连 proxy 是通的（返回 401 鉴权而非拒绝连接），说明是 relay 脚本内部 bug 而非网络。修复路径：检查 relay 里 `UPSTREAM` 的 DNS/连接复用、确认 `ProxyHandler({})` 直连 NAS（绕过本机 Clash `127.0.0.1:7897`）、确保 `x-session-id` 每请求新鲜。该缺陷不影响 NAS/Windows 双端已验证的落库。
+### 5.4 让 relay 开机自启（持久化，根治 502 复发）
+
+502 的真正根因不是网络、也不是脚本连接 bug，而是 **relay 进程没常驻**——一旦拉起 relay 的会话结束（或机器重启没自启），`127.0.0.1:8911` 无人监听，WB 自然 502。彻底解法：
+
+1. **常驻 + 自启**：把 relay 写进 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，值 = `"<pythonw.exe>" "<tdai-wb-relay.py>"`（用 `pythonw.exe` 不弹黑窗）。登录即拉起，重启不丢。
+2. **防重复拉起**：`tdai-wb-relay.py` 的 `main()` 已加「端口被占用即静默退出」的 bind 守卫（`OSError` → `sys.exit(0)`），即使重复触发也不会两台打架。
+3. **验证**：`curl 127.0.0.1:8911/health` 应回 `{"ok":true,"agent":"<YOUR_AGENT_ID>",...}`；若回 502，先确认进程在跑、再看 `tdai-wb-relay.log`。
+
+> ✅ **已验证**：relay 常驻后，WB 端发「请记住探针词 WBRELAYFIX-0915」，NAS 上 `l0_conversations` 的 `<YOUR_AGENT_ID>` 分区新增 4 行，三端共享闭环打通。
 
 ---
 
@@ -351,7 +359,7 @@ for mark in ("NAS-PASS-7788","WIN-PASS-1122","WB-PASS-3355"):
         "SELECT count(*) FROM l0_conversations WHERE message_text LIKE ?", (f"%{mark}%",)).fetchone()[0])
 ```
 
-期望：三端标记各自命中 ≥1（NAS/Win 已实测命中；WB 待 relay 502 修复后验证）。
+期望：三端标记各自命中 ≥1（NAS/Win/WB 三端均已实测命中；WB 经 relay `:8911` 落库 `<YOUR_AGENT_ID>` 已用探针词 `WBRELAYFIX-0915` 验证，详见 §5.4）。
 
 ### 8.3 跨端召回（最重要的验收）
 
@@ -375,13 +383,13 @@ proxy 读 `Authorization: Bearer <user_key>` 鉴权（**不是** `x-tdai-user-ke
 | 合并后 FTS 搜不到 | FTS 未重建 | `INSERT INTO l0_fts(l0_fts) VALUES('rebuild')`（§6.4） |
 | 发消息 401 invalid user_key | key 漏字符 / 用了错头 | 完整复制 `.admin-key`，用 `Authorization: Bearer` |
 | proxy 起但落库失效 | 没设 `PROXY_FULL_STACK=1` | 启动脚本里 `export PROXY_FULL_STACK=1` |
-| WB relay `:8911` 返回 502 | relay 脚本内部连接 bug（非网络） | 修 relay 直连 + 新鲜 session（§5.3） |
+| WB relay `:8911` 返回 502 | relay 进程没起 / `AGENT_ID` 仍是旧 `agt-shared`（落错分区） | ① `curl 127.0.0.1:8911/health` 确认进程在跑；② `AGENT_ID` 必须是 `<YOUR_AGENT_ID>`（§5.3）；③ 已配 HKCU Run 仍 502 → 看 `tdai-wb-relay.log`（§5.4） |
 
 ---
 
 ## 10. 已知限制 & 待办
 
-1. **WB relay 502**：脚本内部 bug，待修（不影响 NAS/Win 双端已验证落库）。
+1. **WB relay 502**：已修复。根因是 relay 进程未常驻 + 旧脚本 `AGENT_ID` 写死 `agt-shared`（落错分区、不共享）。改为 `<YOUR_AGENT_ID>` 并配 HKCU Run 常驻后，WB 落库共享分区已用探针词 `WBRELAYFIX-0915` 验证；三端共享闭环打通（§5.4）。
 2. **语义召回弱**：当前 `embedding.provider=none`，检索仅 BM25 关键词。泛问偶发召不回，精确词必中。→ 待补 BGE-M3 远程 embedding。
 3. **模型被锁上游**：proxy 上游默认 `nemotron-3-super-120b-a12b`，实测 `agents.openclaw` 走 `grok-4.6`。要 WB 用其它强模型需给 proxy 配 `upstream.agents.<name>`（改 `config.yaml` + 生成器）。
 4. **skill 注入污染回复**：TDAI `injection.injectors` 含 `skill`，会把工具模板塞进上下文。relay 侧可在最后一条 user 消息追加「【输出约束】」压制，根治应改 proxy `injection.injectors` 去掉 `skill`（影响全局，需评估）。
@@ -423,7 +431,7 @@ This tutorial unifies **NAS OpenClaw**, **Windows OpenClaw**, and **WorkBuddy** 
 - NAS / Windows OpenClaw: `memory-proxy` provider → `http://<nas>:8096/openclaw/default/v1` with `x-agent-id`/`x-team-id` headers. WorkBuddy: a thin local relay (`tdai-wb-relay.py`) on `127.0.0.1:8911` adds headers + a fresh daily `x-session-id` (avoids the session→agent cache trap) and forwards to the proxy. **Do not** use `/workbuddy/default/v1/responses` — it returns 200 but does not persist.
 - Merge legacy partitions: stop the stack, `UPDATE l0_conversations/l1_records SET agent_id='<shared>'`, then `INSERT INTO l0_fts(l0_fts) VALUES('rebuild')` (FTS5 external-content tables don't auto-sync).
 - Verify by querying `vectors.db`: the shared `agent_id` should grow and other partitions should be 0; a cross-end recall should return memories written by a *different* end.
-- Known gap: the WB relay occasionally 502s (script-internal bug, not network) — fix pending; NAS + Windows ends are verified working.
+- WB relay 502 is FIXED. Root cause: the relay process was not running + a stale `AGENT_ID` (`agt-shared`) wrote to the wrong partition. Corrected to `<YOUR_AGENT_ID>` and kept running at login (HKCU Run → `pythonw`, with a port-in-use guard); WB writes to the shared partition are DB-verified.
 
 Reference: https://github.com/TencentCloud/TencentDB-Agent-Memory
 
