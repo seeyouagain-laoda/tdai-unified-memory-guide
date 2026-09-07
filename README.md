@@ -1,3 +1,5 @@
+> 本仓库已迁移至 [nas-agent-matrix（飞牛NAS与智能体中枢）](https://github.com/seeyouagain-laoda/nas-agent-matrix) 的 [`02_TDAI统一记忆持久化`](https://github.com/seeyouagain-laoda/nas-agent-matrix/tree/main/02_TDAI%E7%BB%9F%E4%B8%80%E8%AE%B0%E5%BF%86%E6%8C%81%E4%B9%85%E5%8C%96) 目录，后续更新请前往新仓库查看。
+
 > ⚠️⚠️ **劝退警告（作者亲测，2026-09-05）**：**最好不要搞这东西。** 太难搞了，Bug 太多了，折腾一整天都搞不利索。下面这套内容**仅供参考**——能跑起来的概率很低，别指望它能稳定工作，慎入。
 
 # TDAI 三端共享记忆库 · 完整部署与排错教程
